@@ -74,6 +74,8 @@ class Sequence(EltMixin):
 
 
 def genre_from_dict(data):
+    if data is None:
+        return None
     if type(data) is dict:
         return data['#text']
     else:
@@ -85,18 +87,25 @@ def genre_list_from_dict(data):
     if data is None:
         return []
     if type(data) is list:
-        return [genre_from_dict(elt) for elt in data]
+        genre_list = [genre_from_dict(elt) for elt in data]
     else:
-        return [genre_from_dict(data)]
+        genre_list = [genre_from_dict(data)]
+    return [g for g in genre_list if g]
 
 
 def parse_fb2(text):
+    body_tag = b'<body>'
+    body_idx = text.find(body_tag)
+    if body_idx != -1:
+        # Some books have invalid markup inside it's body. Try to just drop it.
+        # This also speeds things up a little.
+        text = text[:body_idx] + b'<body/></FictionBook>'
     root = xmltodict.parse(text)
     title_info = root['FictionBook']['description']['title-info']
     doc_info = root['FictionBook']['description'].get('document-info')
-    author_list = Author.list_from_dict(title_info['author'])
+    author_list = Author.list_from_dict(title_info.get('author'))
     if not author_list and doc_info:
-        author_list = Author.list_from_dict(doc_info['author'])
+        author_list = Author.list_from_dict(doc_info.get('author'))
     seq_list = Sequence.list_from_dict(title_info.get('sequence'))
     title = title_info['book-title']
     genre_list = genre_list_from_dict(title_info.get('genre'))
