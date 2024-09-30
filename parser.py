@@ -1,28 +1,113 @@
 #!/usr/bin/env python3
 
 import argparse
-import xml.etree.ElementTree as ET
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
+
+import xmltodict
+from yarl import URL
 
 
 ns = {'fb': 'http://www.gribuser.ru/xml/fictionbook/2.0'}
 
 
+class EltMixin:
+
+    @classmethod
+    def list_from_dict(cls, data):
+        if data is None:
+            return []
+        if type(data) is list:
+            obj_list = [cls.from_dict(elt) for elt in data]
+        else:
+            obj_list = [cls.from_dict(data)]
+        return [obj for obj in obj_list if obj is not None]
+
+
+@dataclass
+class Author(EltMixin):
+    first_name: str
+    last_name: str
+    nick: str
+    home_page: URL
+
+    @classmethod
+    def from_dict(cls, data):
+        self = cls(
+            first_name=data.get('first-name'),
+            last_name=data.get('last-name'),
+            nick=data.get('nickname'),
+            home_page=data.get('home-page'),
+            )
+        if not self.first_name and not self.last_name and not self.nick:
+            # Nothing is defined, should try another section.
+            return None
+        return self
+
+    def __str__(self):
+        elts = [self.last_name, self.first_name]
+        result = ' '.join(filter(None, elts))
+        if result:
+            if self.nick:
+                return f'{result} ({self.nick})'
+            else:
+                return result
+        else:
+            return self.nick or ''
+
+
+@dataclass
+class Sequence(EltMixin):
+    name: str
+    num: int
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(
+            name=data['@name'],
+            num=data.get('@number', '0'),
+            )
+
+    def __str__(self):
+        return f'{self.name}-{self.num}'
+
+
+def genre_from_dict(data):
+    if type(data) is dict:
+        return data['#text']
+    else:
+        assert type(data) is str, repr(data)
+        return data
+
+
+def genre_list_from_dict(data):
+    if data is None:
+        return []
+    if type(data) is list:
+        return [genre_from_dict(elt) for elt in data]
+    else:
+        return [genre_from_dict(data)]
+
+
 def parse_fb2(text):
-    root = ET.fromstring(text)
-    title_info = root.find('.//fb:title-info', ns)
-    print(title_info.find('fb:book-title', ns).text)
-    seq = title_info.find('fb:sequence', ns)
-    if seq is not None:
-        print(seq.get('name'), "#", seq.get('number'))
-    for author in title_info.findall('fb:author', ns):
-        print(author.find('fb:first-name', ns).text, author.find('fb:last-name', ns).text)
-        nickname = author.find('fb:nickname')
-        if nickname is not None:
-            print(nickname.text)
-    for genre in title_info.findall('fb:genre', ns):
-        print("Genre:", genre.text)
+    root = xmltodict.parse(text)
+    title_info = root['FictionBook']['description']['title-info']
+    doc_info = root['FictionBook']['description'].get('document-info')
+    author_list = Author.list_from_dict(title_info['author'])
+    if not author_list and doc_info:
+        author_list = Author.list_from_dict(doc_info['author'])
+    seq_list = Sequence.list_from_dict(title_info.get('sequence'))
+    title = title_info['book-title']
+    genre_list = genre_list_from_dict(title_info.get('genre'))
+    author_elt = ', '.join(str(author) for author in author_list)
+    if not author_elt:
+        author_elt = 'Unknown author'
+    elements = [author_elt]
+    if seq_list:
+        elements.append(', '.join(str(seq) for seq in seq_list))
+    elements.append(str(title))
+    return ' / '.join(elements) + ', genres: ' + ', '.join(genre_list)
 
 
 def process_file(path):
@@ -32,11 +117,16 @@ def process_file(path):
     for name in zip_file.namelist():
         if not name.endswith('.fb2'):
             continue
-        print(f"  Book: {name}")
         with zip_file.open(name) as f:
-            text = f.read()
-            info = parse_fb2(text)
-            # print(f"    {info}")
+            bytes = f.read()
+            try:
+                info_text = parse_fb2(bytes)
+            except:
+                tmp_path = Path('/tmp') / name
+                tmp_path.write_bytes(bytes)
+                print(f"While parsing {path}/{name}, written to {tmp_path}:")
+                raise
+            print(f"  {name}: {info_text}")
         i += 1
         if i > 100:
             break
